@@ -1,0 +1,25 @@
+import assert from 'node:assert/strict';
+const base='http://127.0.0.1:5173';
+const login=await fetch(base+'/signin-with-chatgpt?return_to=%2Fadmin',{redirect:'manual'});
+const cookie=login.headers.get('set-cookie').split(';')[0];
+const get=async(a,admin=false)=>{const r=await fetch(base+'/api/shop?action='+a,{headers:admin?{cookie}:{}});const text=await r.text();let d;try{d=JSON.parse(text)}catch{d={error:text}}return [r.status,d];};
+const post=async(body,admin=false,origin=base)=>{const r=await fetch(base+'/api/shop',{method:'POST',headers:{'Content-Type':'application/json',origin,...(admin?{cookie}:{})},body:JSON.stringify(body)});const text=await r.text();let d;try{d=JSON.parse(text)}catch{d={error:text}}return [r.status,d];};
+assert.equal((await get('admin'))[0],403);
+assert.equal((await post({action:'settings',settings:{}},false))[0],403);
+assert.equal((await post({action:'order'},false,'https://other.example'))[0],403);
+const body={action:'order',phone:'41999990002',name:'Teste automático local',requestKey:crypto.randomUUID(),address:'Rua de teste, 100, bairro Teste, Curitiba',payment:'Pix',items:[{productId:'acai-250',qty:2,toppings:['Banana','Kiwi','Manga','Morango','Uva','Granola','Paçoca'],price:1}]};
+let [status,result]=await post(body);assert.equal(status,200,JSON.stringify(result));
+const again=await post(body);assert.equal(again[1].id,result.id,'Retry must not duplicate order');
+const track=await get('track&id='+result.id+'&token='+result.token);assert.equal(track[1].subtotal,3780,'Server computes price and 7th extra');assert.equal(track[1].fee,null);
+assert.equal((await get('track&id='+result.id+'&token=wrong'))[0],404);
+assert.equal((await post({...body,requestKey:crypto.randomUUID(),items:[{productId:'acai-250',qty:1,toppings:['Banana','Banana']}]}))[0],400);
+assert.equal((await post({...body,requestKey:crypto.randomUUID(),items:[{productId:'acai-250',qty:-1,toppings:[]}]}))[0],400);
+const lookup=await get('customer&phone='+body.phone);assert.deepEqual(lookup[1],{exists:true});
+assert.equal((await post({...body,requestKey:crypto.randomUUID(),name:''}))[0],200,'Returning customer needs no new name');
+assert.equal((await post({action:'updateOrder',id:result.id,status:'Em preparo',paid:true,fee:null},true))[0],400);
+assert.equal((await post({action:'updateOrder',id:result.id,status:'Em preparo',paid:true,fee:500},true))[0],200);
+assert.equal((await get('track&id='+result.id+'&token='+result.token))[1].status,'Em preparo');
+assert.equal((await post({action:'expense',description:'Despesa de teste local',date:'2026-10-30',amount:1000},true))[0],200);
+const admin=(await get('admin',true))[1];assert.ok(admin.orders.find(o=>o.id===result.id).paid);assert.ok(admin.expenses.length);assert.ok(!('token' in admin.orders[0]));
+console.log('PASS: admin authorization, same-origin writes, server pricing, extra toppings, idempotency, private tracking, customer reuse, payment and delivery validation, expenses. Local data only.');
+
